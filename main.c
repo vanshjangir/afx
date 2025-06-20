@@ -6,7 +6,7 @@
 #include <pthread.h>
 #include <sys/syscall.h> 
 
-#define STACK_SIZE  (1024*64)
+#define STACK_SIZE  (1024*4)
 
 #define REG_R8      0
 #define REG_R9      1
@@ -26,6 +26,32 @@
 #define REG_RSP     15
 #define REG_RIP     16
 #define REG_EFL     17
+
+#define afx(fn)\
+    __AFX_PREFIX_##fn;
+
+#define async(ret_type, fn, body)\
+    ret_type __AFX_PREFIX_##fn{\
+    __asm__ __volatile__ (\
+        "#leave store state\n\t"\
+        "leave\n\t"\
+        "ret\n\t"\
+    );\
+    body\
+    }
+
+#define async_plus(ret_type, fn, body)\
+    ret_type fn{\
+    body\
+    }\
+    ret_type __AFX_PREFIX_##fn{\
+    __asm__ __volatile__ (\
+        "#leave store state\n\t"\
+        "leave\n\t"\
+        "ret\n\t"\
+    );\
+    body\
+    }
 
 typedef struct {
     uint64_t rip;
@@ -60,8 +86,6 @@ typedef struct {
 
 pthread_t monitor_t;
 pthread_t executor_t;
-uint64_t executor_rip;
-uint64_t executor_rsp;
 uint64_t stack_limit = STACK_SIZE;
 int flag = 1;
 
@@ -110,16 +134,7 @@ void restore_context(afx_context* cr_ctx, ucontext_t *cur_ctx){
     cur_ctx->uc_mcontext.gregs[REG_EFL] = cr_ctx->cpu.efl;
 }
 
-void print(int x){
-    int y = 0;
-    while(1){
-        printf("Executing...%d-%d\n", x, x+y);
-        y = x+y;
-        usleep(100*1000);
-    }
-}
-
-void make_context(void* fp, int x){
+void make_context(void* fp, int x, int y){
     if(afxv.len == afxv.cap){
         afxv.ptr = realloc(afxv.ptr, sizeof(afx_context)*afxv.cap*2);
         afxv.cap *= 2;
@@ -128,6 +143,7 @@ void make_context(void* fp, int x){
     afxv.len++;
     afxv.ptr[afxv.len-1].cpu.rip = (uint64_t)fp;
     afxv.ptr[afxv.len-1].cpu.rdi = x;
+    afxv.ptr[afxv.len-1].cpu.rsi = y;
     afxv.ptr[afxv.len-1].cpu.rsp = (uint64_t)new_stack_base + STACK_SIZE;
     stack_limit += STACK_SIZE;
 }
@@ -172,15 +188,6 @@ void* executor(){
         exit(1);
     }
 
-    asm volatile(
-        "movq   %%rsp,  %0\n\t"
-        : "=r"(executor_rsp)
-    );
-
-    // make context for functions
-    make_context(&print, 1);
-    make_context(&print, 2);
-
     sleep(-1);
     return NULL;
 }
@@ -205,13 +212,35 @@ int afx_init(){
     return 0;
 }
 
+
+async(
+    int, print(int x, int y),{
+        while(1){
+            printf("Executing...%d-%d\n", x, y);
+            y = x + y;
+            x = y - x;
+            usleep(100*1000);
+        }
+    }
+)
+
+
+
 int main(){
-    int rc;
-    rc = afx_init();
+    int rc = 0;
+    //rc = afx_init();
     if(rc != 0){
         printf("Error initializing afx");
         exit(-1);
     }
+
+    // make context for functions
+    // make_context(&print, 0, 1);
+    // make_context(&print, 1, 3);
+
+    //print(1,2);
+    afx(print(1,2));
+    
     sleep(100);
     return 0;
 }
