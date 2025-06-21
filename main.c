@@ -27,70 +27,171 @@
 #define REG_RIP     16
 #define REG_EFL     17
 
-#define afx(fn)\
-    __AFX_PREFIX_##fn;
-
-#define async(ret_type, fn, body)\
-    ret_type __AFX_PREFIX_##fn{\
-    __asm__ __volatile__ (\
-        "#leave store state\n\t"\
-        "leave\n\t"\
-        "ret\n\t"\
-    );\
-    body\
-    }
-
-#define async_plus(ret_type, fn, body)\
-    ret_type fn{\
-    body\
-    }\
-    ret_type __AFX_PREFIX_##fn{\
-    __asm__ __volatile__ (\
-        "#leave store state\n\t"\
-        "leave\n\t"\
-        "ret\n\t"\
-    );\
-    body\
-    }
-
 typedef struct {
-    uint64_t rip;
-    uint64_t rsp;
     uint64_t rdi;
     uint64_t rsi;
-    uint64_t rax;
     uint64_t rdx;
     uint64_t rcx;
-    uint64_t rbx;
-    uint64_t rbp;
-    uint64_t efl;
     uint64_t r8;
     uint64_t r9;
+    uint64_t rax;
+    uint64_t rbx;
+    uint64_t rbp;
     uint64_t r10;
     uint64_t r11;
     uint64_t r12;
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
+    uint64_t rsp;
+    uint64_t rip;
+    uint64_t efl;
 } cpu_context;
 
 typedef struct {
     cpu_context cpu;
+    void* stack;
 } afx_context;
 
-typedef struct {
-    int len;
-    int cap;
+struct afx_list {
     afx_context* ptr;
-} afx_vector;
+    struct afx_list* next;
+};
+typedef struct afx_list afx_list;
+afx_list* last = NULL;
 
-pthread_t monitor_t;
-pthread_t executor_t;
-uint64_t stack_limit = STACK_SIZE;
-int flag = 1;
 
-afx_vector afxv;
-int cur_f_index = -1;
+long rbp_caller;
+afx_list context_list;
+afx_list* cur_f = NULL;
+
+
+afx_context* get_new_context(){
+    afx_context* new_ctx = malloc(sizeof(afx_context));
+    if (new_ctx == NULL) {
+        perror("malloc failed for new_ctx");
+        exit(EXIT_FAILURE);
+    }
+    
+    new_ctx->stack = malloc(STACK_SIZE);
+     if (new_ctx->stack == NULL) {
+        perror("malloc failed for new_ctx->stack");
+        exit(EXIT_FAILURE);
+    }
+    return new_ctx;
+}
+
+void add_ctx_to_queue(afx_context* new_ctx){
+    afx_list* new_node = (afx_list*)malloc(sizeof(afx_list));
+    new_node->ptr = new_ctx;
+    if(last == NULL){
+        last = new_node;
+        last->next = last;
+    } else {
+        new_node->next = last->next;
+        last->next = new_node;
+    }
+}
+
+
+#define save_cpu_context \
+    do{\
+        long rdi, rsi, rdx, rcx, r8, r9, rbp_callee; \
+        __asm__ __volatile__ (\
+            "movq   %%rdi,  %0\n\t"\
+            "movq   %%rsi,  %1\n\t"\
+            "movq   %%rdx,  %2\n\t"\
+            "movq   %%rcx,  %3\n\t"\
+            "movq   %%r8,   %4\n\t"\
+            "movq   %%r9,   %5\n\t"\
+            "movq   %%rbp,  %6\n\t"\
+            : "=m"(rdi), "=m"(rsi), "=m"(rdx), "=m"(rcx), \
+              "=m"(r8), "=m"(r9), "=m"(rbp_callee) \
+        );\
+        \
+        afx_context* new_ctx = get_new_context();\
+        new_ctx->cpu.rdi = rdi; \
+        new_ctx->cpu.rsi = rsi; \
+        new_ctx->cpu.rdx = rdx; \
+        new_ctx->cpu.rcx = rcx; \
+        new_ctx->cpu.r8 = r8; \
+        new_ctx->cpu.r9 = r9; \
+        \
+        __asm__ __volatile__ (\
+            "movq   %%rax, 48(%0)\n\t"  \
+            "movq   %%rbx, 56(%0)\n\t"  \
+            "movq   %%rbp, 64(%0)\n\t"  \
+            "movq   %%r10, 72(%0)\n\t"  \
+            "movq   %%r11, 80(%0)\n\t"  \
+            "movq   %%r12, 88(%0)\n\t"  \
+            "movq   %%r13, 96(%0)\n\t"  \
+            "movq   %%r14, 104(%0)\n\t" \
+            "movq   %%r15, 112(%0)\n\t" \
+            "movq   %%rsp, 120(%0)\n\t" \
+            \
+            "leaq   1f(%%rip), %%rax\n\t" \
+            "movq   %%rax, 128(%0)\n\t" \
+            "1:\n\t" \
+            "pushfq\n\t" \
+            "popq   136(%0)\n\t" \
+            :\
+            : "r" (&new_ctx->cpu) \
+            : "rax", "memory" \
+        ); \
+        \
+        void* copy_dest = (void*)new_ctx->stack;\
+        void* copy_src = (void*)(rbp_callee);\
+        long copy_size = rbp_caller - rbp_callee;\
+        \
+        if (copy_size > 0 && copy_size < STACK_SIZE) {\
+            __asm__ __volatile__ (\
+                "rep movsb"\
+                : "+D"(copy_dest), "+S"(copy_src), "+c"(copy_size)\
+                :: "memory"\
+            );\
+        }\
+        /*printf("rdi = %ld\n", cur_ctx->cpu.rdi);\*/\
+        /*printf("rsi = %ld\n", cur_ctx->cpu.rsi);\*/\
+        /*printf("rdx = %ld\n", cur_ctx->cpu.rdx);\*/\
+        /*printf("rcx = %ld\n", cur_ctx->cpu.rcx);\*/\
+        /*printf("r8 = %ld\n", cur_ctx->cpu.r8);\*/\
+        /*printf("r9 = %ld\n", cur_ctx->cpu.r9);\*/\
+        /*long stack_offset = rbp_caller - (long)copy_src;\*/\
+        /*printf("seven = %ld\n", *(long*)(cur_ctx->stack + stack_offset + 16));\*/\
+        /*printf("eight = %ld\n", *(long*)(cur_ctx->stack + stack_offset + 24));\*/\
+        /*printf("nine = %ld\n", *(long*)(cur_ctx->stack + stack_offset + 32));\*/\
+        /*printf("rbp_callee = %ld\n", rbp_callee);\*/\
+        add_ctx_to_queue(new_ctx);\
+    } while(0);\
+    \
+    __asm__ __volatile__(\
+        "leave\n\t"\
+        "ret\n\t"\
+    );\
+    
+
+// Calls an async function
+#define afx(fn)\
+    __asm__ ("movq   %%rbp,  %0\n\t":   "=r"(rbp_caller));\
+    __AFX_PREFIX_##fn;
+
+
+// Defines an async function
+#define async(ret_type, fn, body)\
+    ret_type __AFX_PREFIX_##fn{\
+        save_cpu_context\
+    body\
+    }
+
+// Defines both async and normal function
+#define async_plus(ret_type, fn, body)\
+    ret_type fn{\
+    body\
+    }\
+    ret_type __AFX_PREFIX_##fn{\
+        save_cpu_context\
+    body\
+    }
 
 void save_context(afx_context* cr_ctx, ucontext_t *cur_ctx){
     cr_ctx->cpu.r8 = cur_ctx->uc_mcontext.gregs[REG_R8];
@@ -134,28 +235,17 @@ void restore_context(afx_context* cr_ctx, ucontext_t *cur_ctx){
     cur_ctx->uc_mcontext.gregs[REG_EFL] = cr_ctx->cpu.efl;
 }
 
-void make_context(void* fp, int x, int y){
-    if(afxv.len == afxv.cap){
-        afxv.ptr = realloc(afxv.ptr, sizeof(afx_context)*afxv.cap*2);
-        afxv.cap *= 2;
-    }
-    void* new_stack_base = malloc(STACK_SIZE);
-    afxv.len++;
-    afxv.ptr[afxv.len-1].cpu.rip = (uint64_t)fp;
-    afxv.ptr[afxv.len-1].cpu.rdi = x;
-    afxv.ptr[afxv.len-1].cpu.rsi = y;
-    afxv.ptr[afxv.len-1].cpu.rsp = (uint64_t)new_stack_base + STACK_SIZE;
-    stack_limit += STACK_SIZE;
-}
-
 void* monitor(void* arg){
+    pthread_t executor_t = *(pthread_t*)(arg);
     while(1){
         int rc;
         printf("Sending SIGURG\n");
-        rc = pthread_kill(executor_t, SIGURG);
-        if(rc != 0){
-            printf("pthread_kill error");
-            exit(1);
+        if(last != NULL && last->next != last){
+            rc = pthread_kill(executor_t, SIGURG);
+            if(rc != 0){
+                printf("pthread_kill error");
+                exit(1);
+            }
         }
         usleep(1000*1000);
     }
@@ -167,10 +257,10 @@ void handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr){
         printf("Received sigurg\n");
 
         ucontext_t *ctx = (ucontext_t*)ctx_ptr;
-        save_context(&afxv.ptr[cur_f_index], ctx);
+        save_context(cur_f->ptr, ctx);
         
-        cur_f_index = (cur_f_index+1)%afxv.len;
-        restore_context(&afxv.ptr[cur_f_index], ctx);
+        cur_f = cur_f->next;
+        restore_context(cur_f->ptr, ctx);
     }
 }
 
@@ -194,16 +284,16 @@ void* executor(){
 
 int afx_init(){
     int rc;
-    afxv.len = 0;
-    afxv.cap = 0;
     
-    rc = pthread_create(&executor_t, NULL, executor, NULL);
+    pthread_t *executor_tp = (pthread_t*)malloc(sizeof(pthread_t));
+    rc = pthread_create(executor_tp, NULL, executor, NULL);
     if(rc != 0){
         printf("Error creating executor thread");
         return rc;
     }
-    
-    rc = pthread_create(&monitor_t, NULL, monitor, (void*)&executor_t);
+   
+    pthread_t monitor_t;
+    rc = pthread_create(&monitor_t, NULL, monitor, (void*)executor_tp);
     if(rc != 0){
         printf("Error creating monitor thread");
         return rc;
@@ -214,13 +304,14 @@ int afx_init(){
 
 
 async(
-    int, print(int x, int y),{
-        while(1){
-            printf("Executing...%d-%d\n", x, y);
-            y = x + y;
-            x = y - x;
-            usleep(100*1000);
-        }
+    void, print(int a, int b, int c, int d, int e, int f, int g, int h, int i), {
+        //while(1){
+        //    printf("Executing...%d-%d\n", x, y);
+        //    y = x + y;
+        //    x = y - x;
+        //    usleep(100*1000);
+        //}
+        printf("%d", a+b+c+d+e+f+g+h+i);
     }
 )
 
@@ -234,13 +325,8 @@ int main(){
         exit(-1);
     }
 
-    // make context for functions
-    // make_context(&print, 0, 1);
-    // make_context(&print, 1, 3);
-
     //print(1,2);
-    afx(print(1,2));
+    afx(print(1,2,3,4,5,6,7,8,9));
     
-    sleep(100);
     return 0;
 }
