@@ -11,7 +11,9 @@
 #include <sys/syscall.h>
 #include <ucontext.h>
 
+#ifndef STACK_SIZE
 #define STACK_SIZE  (1024*4)
+#endif
 
 typedef struct {
     uint64_t rdi;
