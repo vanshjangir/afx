@@ -12,7 +12,7 @@
 #include <ucontext.h>
 
 #ifndef STACK_SIZE
-#define STACK_SIZE  (1024*4)
+#define STACK_SIZE  (1024*8)
 #endif
 
 typedef struct {
@@ -43,32 +43,39 @@ typedef struct {
 } afx_context;
 
 struct afx_list_node {
-    afx_context* ptr;
+    afx_context* ctx;
     struct afx_list_node* next;
     struct afx_list_node* prev;
 };
 typedef struct afx_list_node afx_list_node;
 
+extern pthread_mutex_t _afx_mutex;
+
+extern int _afx_num_func;
+extern int _afx_is_running;
+extern int _afx_deletion_mark;
+
 extern void* _afx_copy_src;
 extern void* _afx_copy_dest;
-extern int _AFX_NUM_FUNC;
+
+extern afx_list_node* _afx_last;
+extern afx_list_node* _afx_cur_node;
+
 extern uint64_t _afx_rbp_caller;
 extern uint64_t _afx_rbp_callee;
 extern uint64_t _afx_copy_size;
 extern uint64_t _afx_executor_addr;
 extern uint64_t _afx_rdi, _afx_rsi, _afx_rdx, _afx_rcx, _afx_r8, _afx_r9;
 
-extern int _afx_is_running;
-extern afx_list_node* _afx_start;
-extern afx_list_node* _afx_cur_node;
 
 afx_context* _afx_get_new_context();
 void _afx_add_ctx_to_queue(afx_context* new_ctx);
 void _afx_delete_context();
+void _afx_mark_for_deletion();
 void _afx_save_context(afx_context* fn_ctx, ucontext_t *kernel_ctx);
 void _afx_restore_context(afx_context* fn_ctx, ucontext_t *kernel_ctx);
-void* _afx_monitor(void* arg);
 void _afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr);
+void* _afx_monitor(void* arg);
 void* _afx_executor(void* arg);
 int afx_init();
 
@@ -115,7 +122,9 @@ int afx_init();
         : "rax", "memory"\
     );\
     \
-    if (_afx_rbp_caller > _afx_rbp_callee && _afx_rbp_caller - _afx_rbp_callee < STACK_SIZE) {\
+    if(_afx_rbp_caller > _afx_rbp_callee &&\
+        _afx_rbp_caller - _afx_rbp_callee < STACK_SIZE){\
+        \
         _afx_copy_size = _afx_rbp_caller - _afx_rbp_callee - 16;\
         new_ctx->stack = (char*)new_ctx->stack - _afx_copy_size;\
         _afx_copy_dest = (void*)(new_ctx->stack);\
@@ -127,7 +136,8 @@ int afx_init();
             : "+D"(_afx_copy_dest), "+S"(_afx_copy_src), "+c"(_afx_copy_size)\
             :: "memory"\
         );\
-    } else {\
+    }\
+    else{\
         printf("Invalid stack size while copying stack\n");\
         exit(-1);\
     }\
@@ -152,10 +162,10 @@ int afx_init();
     __attribute__((noinline)) ret_type __AFX_PREFIX_##fn args {\
         save_cpu_context\
         asm volatile(\
-            "callq  %0\n\t"\
+            "callq  *%0\n\t"\
             ::"r"(fn)\
         );\
-        _afx_delete_context();\
+        _afx_mark_for_deletion();\
         asm volatile(\
             "jmp *%0\n\t"\
             ::"r"(_afx_executor_addr)\

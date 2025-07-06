@@ -1,10 +1,15 @@
 #include "afx.h"
 
-int _AFX_NUM_FUNC = 0;
+pthread_mutex_t _afx_mutex;
+
+int _afx_num_func = 0;
 int _afx_is_running = 0;
+int _afx_deletion_mark = 0;
+
 void* _afx_copy_src = NULL;
 void* _afx_copy_dest = NULL;
-afx_list_node* _afx_start = NULL;
+
+afx_list_node* _afx_last = NULL;
 afx_list_node* _afx_cur_node = NULL;
 
 uint64_t _afx_rbp_caller = 0;
@@ -12,57 +17,6 @@ uint64_t _afx_rbp_callee = 0;
 uint64_t _afx_copy_size = 0;
 uint64_t _afx_executor_addr = 0;
 uint64_t _afx_rdi, _afx_rsi, _afx_rdx, _afx_rcx, _afx_r8, _afx_r9;
-
-
-afx_context* _afx_get_new_context(){
-    afx_context* new_ctx = (afx_context*)malloc(sizeof(afx_context));
-    if (new_ctx == NULL) {
-        printf("malloc failed for new_ctx\n");
-        exit(EXIT_FAILURE);
-    }
-
-    new_ctx->base = malloc(STACK_SIZE);
-    new_ctx->stack = new_ctx->base;
-    if (new_ctx->stack == NULL) {
-        printf("malloc failed for new_ctx->stack\n");
-        exit(EXIT_FAILURE);
-    }
-    new_ctx->stack = (char*)new_ctx->stack + STACK_SIZE;
-    return new_ctx;
-}
-
-void _afx_add_ctx_to_queue(afx_context* new_ctx){
-    afx_list_node* new_node = (afx_list_node*)malloc(sizeof(afx_list_node));
-    new_node->ptr = new_ctx;
-    if(_AFX_NUM_FUNC == 0){
-        _afx_start = new_node;
-        _afx_start->next = new_node;
-        _afx_start->prev = new_node;
-    } else {
-        new_node->next = _afx_start;
-        new_node->prev = _afx_start->prev;
-        _afx_start->prev->next = new_node;
-        _afx_start->prev = new_node;
-        _afx_start = new_node;
-    }
-    _AFX_NUM_FUNC += 1;
-}
-
-void _afx_delete_context(){
-    if(_AFX_NUM_FUNC == 1){
-        free(_afx_cur_node->ptr->base);
-        free(_afx_cur_node->ptr);
-        _afx_cur_node = NULL;
-        _afx_start = NULL;
-        _afx_is_running = 0;
-    } else {
-        _afx_cur_node->prev->next = _afx_cur_node->next;
-        _afx_cur_node->next->prev = _afx_cur_node->prev;
-        free(_afx_cur_node->ptr->base);
-        free(_afx_cur_node->ptr);
-    }
-    _AFX_NUM_FUNC -= 1;
-}
 
 void _afx_save_context(afx_context* fn_ctx, ucontext_t *kernel_ctx){
     fn_ctx->cpu.r8 = kernel_ctx->uc_mcontext.gregs[REG_R8];
@@ -106,37 +60,122 @@ void _afx_restore_context(afx_context* fn_ctx, ucontext_t *kernel_ctx){
     kernel_ctx->uc_mcontext.gregs[REG_EFL] = fn_ctx->cpu.efl;
 }
 
-void* _afx_monitor(void* arg){
-    pthread_t executor_t = *(pthread_t*)(arg);
-    while(1){
-        if(_AFX_NUM_FUNC > 0){
-            int rc = pthread_kill(executor_t, SIGURG);
-            if(rc != 0){
-                printf("pthread_kill error\n");
-                exit(1);
-            }
-        }
-        usleep(10*1000);
+afx_context* _afx_get_new_context(){
+    afx_context* new_ctx = (afx_context*)malloc(sizeof(afx_context));
+    if(new_ctx == NULL){
+        printf("malloc failed for new_ctx\n");
+        exit(EXIT_FAILURE);
     }
-    return NULL;
+
+    new_ctx->base = malloc(STACK_SIZE);
+    if (new_ctx->base == NULL) {
+        printf("malloc failed for new_ctx->base\n");
+        exit(EXIT_FAILURE);
+    }
+    new_ctx->stack = (char*)new_ctx->base + STACK_SIZE;
+    return new_ctx;
+}
+
+void _afx_add_ctx_to_queue(afx_context* new_ctx){
+    afx_list_node* new_node = (afx_list_node*)malloc(sizeof(afx_list_node));
+    if(new_node == NULL){
+        printf("Malloc failed while adding context\n");
+        exit(EXIT_FAILURE);
+    }
+    new_node->ctx = new_ctx;
+    
+    pthread_mutex_lock(&_afx_mutex);
+    
+    if(_afx_num_func == 0){
+        _afx_last = new_node;
+        _afx_last->next = new_node;
+        _afx_last->prev = new_node;
+    }
+    else {
+        new_node->prev = _afx_last;
+        new_node->next = _afx_last->next;
+        _afx_last->next->prev = new_node;
+        _afx_last->next = new_node;
+        _afx_last = new_node;
+    }
+    _afx_num_func += 1;
+    
+    pthread_mutex_unlock(&_afx_mutex);
+}
+
+void _afx_delete_context(){
+    afx_list_node* node_to_delete = _afx_cur_node;
+
+    if(_afx_num_func == 1){
+        _afx_last = NULL;
+        _afx_cur_node = NULL;
+    }
+    else{
+        node_to_delete->prev->next = node_to_delete->next;
+        node_to_delete->next->prev = node_to_delete->prev;
+        if(_afx_last == node_to_delete){
+            _afx_last = node_to_delete->prev;
+        }
+    }
+
+    free(node_to_delete->ctx->base);
+    free(node_to_delete->ctx);
+    free(node_to_delete);
+
+    _afx_num_func -= 1;
+    _afx_is_running = 0;
+    _afx_deletion_mark = 0;
+}
+
+void _afx_mark_for_deletion(){
+    pthread_mutex_lock(&_afx_mutex);
+    _afx_deletion_mark = 1;
+    pthread_mutex_unlock(&_afx_mutex);
 }
 
 void _afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr){
     if(signum == SIGURG){
-        if(_AFX_NUM_FUNC == 0)
-            return;
+        pthread_mutex_lock(&_afx_mutex);
+        if(_afx_deletion_mark == 1){
+            _afx_delete_context();
+        }
         
+        if(_afx_num_func == 0){
+            pthread_mutex_unlock(&_afx_mutex);
+            return;
+        }
+
         ucontext_t *kernel_ctx = (ucontext_t*)ctx_ptr;
+        
         if(_afx_is_running == 1){
-            _afx_save_context(_afx_cur_node->ptr, kernel_ctx);
+            _afx_save_context(_afx_cur_node->ctx, kernel_ctx);
             _afx_cur_node = _afx_cur_node->next;
-        } else {
-            _afx_cur_node = _afx_start;
+        }
+        else{
+            _afx_cur_node = _afx_last->next;
             _afx_is_running = 1;
         }
 
-        _afx_restore_context(_afx_cur_node->ptr, kernel_ctx);
+        _afx_restore_context(_afx_cur_node->ctx, kernel_ctx);
+        pthread_mutex_unlock(&_afx_mutex);
     }
+}
+
+void* _afx_monitor(void* arg){
+    pthread_t executor_t = *(pthread_t*)(arg);
+    while(1){
+        pthread_mutex_lock(&_afx_mutex);
+        if(_afx_num_func > 0){
+            int rc = pthread_kill(executor_t, SIGURG);
+            if(rc != 0){
+                printf("pthread_kill error\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        pthread_mutex_unlock(&_afx_mutex);
+        usleep(10*1000);
+    }
+    return NULL;
 }
 
 void* _afx_executor(void* arg){
@@ -150,7 +189,7 @@ void* _afx_executor(void* arg){
     rc = sigaction(SIGURG, &sa, NULL);
     if(rc != 0){
         printf("sigaction error in executor\n");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     while(1){
