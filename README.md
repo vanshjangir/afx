@@ -1,5 +1,5 @@
 ### AFX - Async Function Execution
-Simple preemptive scheduler to execute functions asynchronously(x86_64 only). Works for cpu bound tasks only, i.e. anything that makes a thread go to sleep will not work reliably. Implementation details [here](https://vanshjangir.github.io/devlog/1_afx.html).
+Simple preemptive scheduler to execute functions asynchronously(x86_64 only). Works for cpu bound tasks only and anything that makes a thread go to sleep will not work reliably, which makes it entirely useless. Implementation details [here](https://vanshjangir.github.io/blogs/1_afx.html).
 
 ### Compilation
 STACK_SIZE is the size of the dedicated stack used by every async function/routine. If not passed, it will be 8KB. If segfaults or core dumps are occuring for no obvious reasons, try increasing the STACK_SIZE. `-fno-omit-frame-pointer` flag needs to be passed, as maintaining frame pointer is essential.
@@ -10,10 +10,12 @@ gcc -fno-omit-frame-pointer -DSTACK_SIZE=<stack_size> /path/to/afx.c yourfile.c 
 ### Usage (also see examples):
 ```c
 #include "/path/to/afx.h"
+// declaration
+async_dec(<return_type>, <function_name>(arg1, arg2, ...));
 
 // definition
 async(
-    <return_type>, <function_name>, (arg1, arg2, ..), {
+    <return_type>, <function_name>, (arg1, arg2, ...), {
         //body
     }
 )

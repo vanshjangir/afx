@@ -1,26 +1,31 @@
-#include "../afx.h"
 #include <stdio.h>
+#include "../afx.h"
+
+#define SOME_VERY_LARGE_VALUE 1000000000
+
+async_dec(void, print1(long long int))
+async_dec(void, print2(long long int))
 
 async(
-    void, print1, (), {
-        int i = 0;
-        while(i++ < 4){
-            printf("FIRST IS running\n");
-            
-            // usleep is being used to demonstrate a heavy task
-            // but using anything that makes the thread sleep
-            // can cause undefined behaviour
-            usleep(1000*1000);
+    void, print1, (long long x), {
+        while(1){
+            x = 0;
+            while(x++ < SOME_VERY_LARGE_VALUE){
+                // some cpu intensive task
+            }
+            printf("First is running\n");
         }
     }
 )
 
 async(
-    void, print2, (), {
-        int i = 0;
-        while(i++ < 4){
-            printf("SECOND IS running\n");
-            usleep(1000*1000);
+    void, print2, (long long x), {
+        while(1){
+            x = 0;
+            while(x++ < SOME_VERY_LARGE_VALUE/2){
+                // some cpu intensive task
+            }
+            printf("Second is running\n");
         }
     }
 )
@@ -33,8 +38,8 @@ int main(){
         exit(-1);
     }
     
-    afx(print1());
-    afx(print2());
-    sleep(1);
+    afx(print1(1));
+    afx(print2(1));
+    sleep(20);
     return 0;
 }

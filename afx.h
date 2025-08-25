@@ -171,3 +171,6 @@ int afx_init();
             ::"r"(_afx_executor_addr)\
         );\
     }
+
+#define async_dec(ret_type, fn)\
+    ret_type __AFX_PREFIX_##fn;
