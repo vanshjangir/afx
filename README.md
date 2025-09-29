@@ -2,7 +2,8 @@
 Simple preemptive scheduler to execute functions asynchronously(x86_64 only). Works for cpu bound tasks only and anything that makes a thread go to sleep will not work reliably, which makes it entirely useless. Implementation details [here](https://vanshjangir.github.io/blogs/1_afx.html).
 
 ### Compilation
-STACK_SIZE is the size of the dedicated stack used by every async function/routine. If not passed, it will be 8KB. If segfaults or core dumps are occuring for no obvious reasons, try increasing the STACK_SIZE. `-fno-omit-frame-pointer` flag needs to be passed, as maintaining frame pointer is essential.
+* STACK_SIZE is the size of the dedicated stack used by every async function/routine. If not passed, it will be 4KB. If segfaults or core dumps are occuring for no obvious reasons (the reason is my incompetency, and someting related to page alignment, don't know for sure), try increasing the STACK_SIZE.
+* `-fno-omit-frame-pointer` flag needs to be passed, as maintaining frame pointer is essential.
 ```
 gcc -fno-omit-frame-pointer -DSTACK_SIZE=<stack_size> /path/to/afx.c yourfile.c -o yourfile
 ```
@@ -24,16 +25,8 @@ async(
 afx(function_name(arg1, arg2, ...));
 ```
 
-### Benchmarks
-These benchmarks are done with STACK_SIZE = 8KB. Increasing the STACK_SIZE will increase the spawnning time as well.
-|Number of functions spawned|Avg Time to spawn one function (microseconds)|
-|---------------------------|---------------------------------------------|
-|1                          |~5.55                                        |
-|100                        |~3.51                                        |
-|10000                      |~3.15                                        |
-|1000000                    |~2.88                                        |
-
 ### Todo
+- [ ] Bug: Indirect memory leaks.
 - [ ] Support for async functions, which can go to sleep on an I/O call or sleep timer.
 
 ### Refs:

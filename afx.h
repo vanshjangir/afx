@@ -12,7 +12,7 @@
 #include <ucontext.h>
 
 #ifndef STACK_SIZE
-#define STACK_SIZE  (1024*8)
+#define STACK_SIZE  (1024*4)
 #endif
 
 typedef struct {
@@ -49,34 +49,34 @@ struct afx_list_node {
 };
 typedef struct afx_list_node afx_list_node;
 
-extern pthread_mutex_t _afx_mutex;
+extern pthread_mutex_t afx_mutex;
 
-extern int _afx_num_func;
-extern int _afx_is_running;
-extern int _afx_deletion_mark;
+extern int afx_num_func;
+extern int afx_is_running;
+extern int afx_deletion_mark;
 
-extern void* _afx_copy_src;
-extern void* _afx_copy_dest;
+extern void* afx_copy_src;
+extern void* afx_copy_dest;
 
-extern afx_list_node* _afx_last;
-extern afx_list_node* _afx_cur_node;
+extern afx_list_node* afx_last;
+extern afx_list_node* afx_cur_node;
 
-extern uint64_t _afx_rbp_caller;
-extern uint64_t _afx_rbp_callee;
-extern uint64_t _afx_copy_size;
-extern uint64_t _afx_executor_addr;
-extern uint64_t _afx_rdi, _afx_rsi, _afx_rdx, _afx_rcx, _afx_r8, _afx_r9;
+extern uint64_t afx_rbp_caller;
+extern uint64_t afx_rbp_callee;
+extern uint64_t afx_copy_size;
+extern uint64_t afx_executor_addr;
+extern uint64_t afx_rdi, afx_rsi, afx_rdx, afx_rcx, afx_r8, afx_r9;
 
 
-afx_context* _afx_get_new_context();
-void _afx_add_ctx_to_queue(afx_context* new_ctx);
-void _afx_delete_context();
-void _afx_mark_for_deletion();
-void _afx_save_context(afx_context* fn_ctx, ucontext_t *kernel_ctx);
-void _afx_restore_context(afx_context* fn_ctx, ucontext_t *kernel_ctx);
-void _afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr);
-void* _afx_monitor(void* arg);
-void* _afx_executor(void* arg);
+afx_context* afx_get_new_context();
+void afx_add_ctx_to_queue(afx_context* new_ctx);
+void afx_delete_context();
+void afx_mark_for_deletion();
+void afx_save_context(afx_context* fn_ctx, ucontext_t *kernel_ctx);
+void afx_restore_context(afx_context* fn_ctx, ucontext_t *kernel_ctx);
+void afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr);
+void* afx_monitor(void* arg);
+void* afx_executor(void* arg);
 int afx_init();
 
 
@@ -89,17 +89,17 @@ int afx_init();
         "movq   %%r8,   %4\n\t"\
         "movq   %%r9,   %5\n\t"\
         "movq   %%rbp,  %6\n\t"\
-        : "=m"(_afx_rdi), "=m"(_afx_rsi), "=m"(_afx_rdx), "=m"(_afx_rcx),\
-          "=m"(_afx_r8), "=m"(_afx_r9), "=m"(_afx_rbp_callee)\
+        : "=m"(afx_rdi), "=m"(afx_rsi), "=m"(afx_rdx), "=m"(afx_rcx),\
+          "=m"(afx_r8), "=m"(afx_r9), "=m"(afx_rbp_callee)\
     );\
     \
-    afx_context* new_ctx = _afx_get_new_context();\
-    new_ctx->cpu.rdi = _afx_rdi;\
-    new_ctx->cpu.rsi = _afx_rsi;\
-    new_ctx->cpu.rdx = _afx_rdx;\
-    new_ctx->cpu.rcx = _afx_rcx;\
-    new_ctx->cpu.r8 = _afx_r8;\
-    new_ctx->cpu.r9 = _afx_r9;\
+    afx_context* new_ctx = afx_get_new_context();\
+    new_ctx->cpu.rdi = afx_rdi;\
+    new_ctx->cpu.rsi = afx_rsi;\
+    new_ctx->cpu.rdx = afx_rdx;\
+    new_ctx->cpu.rcx = afx_rcx;\
+    new_ctx->cpu.r8 = afx_r8;\
+    new_ctx->cpu.r9 = afx_r9;\
     \
     asm volatile (\
         "movq   %%rax, 48(%0)\n\t"\
@@ -122,18 +122,18 @@ int afx_init();
         : "rax", "memory"\
     );\
     \
-    if(_afx_rbp_caller > _afx_rbp_callee &&\
-        _afx_rbp_caller - _afx_rbp_callee < STACK_SIZE){\
+    if(afx_rbp_caller > afx_rbp_callee &&\
+        afx_rbp_caller - afx_rbp_callee < STACK_SIZE){\
         \
-        _afx_copy_size = _afx_rbp_caller - _afx_rbp_callee - 16;\
-        new_ctx->stack = (char*)new_ctx->stack - _afx_copy_size;\
-        _afx_copy_dest = (void*)(new_ctx->stack);\
-        _afx_copy_src = (void*)(_afx_rbp_callee + 16);\
+        afx_copy_size = afx_rbp_caller - afx_rbp_callee - 16;\
+        new_ctx->stack = (char*)new_ctx->stack - afx_copy_size;\
+        afx_copy_dest = (void*)(new_ctx->stack);\
+        afx_copy_src = (void*)(afx_rbp_callee + 16);\
         new_ctx->cpu.rbp = (uint64_t)new_ctx->stack;\
         new_ctx->cpu.rsp = (uint64_t)new_ctx->stack;\
         asm volatile (\
             "rep movsb"\
-            : "+D"(_afx_copy_dest), "+S"(_afx_copy_src), "+c"(_afx_copy_size)\
+            : "+D"(afx_copy_dest), "+S"(afx_copy_src), "+c"(afx_copy_size)\
             :: "memory"\
         );\
     }\
@@ -142,7 +142,7 @@ int afx_init();
         exit(-1);\
     }\
     \
-    _afx_add_ctx_to_queue(new_ctx);\
+    afx_add_ctx_to_queue(new_ctx);\
     \
     asm volatile(\
         "leave\n\t"\
@@ -152,7 +152,7 @@ int afx_init();
 }
 
 #define afx(fn)\
-    asm ("movq %%rbp, %0\n\t": "=r"(_afx_rbp_caller));\
+    asm ("movq %%rbp, %0\n\t": "=r"(afx_rbp_caller));\
     __AFX_PREFIX_##fn;
 
 #define async(ret_type, fn, args, body)\
@@ -165,10 +165,10 @@ int afx_init();
             "callq  *%0\n\t"\
             ::"r"(fn)\
         );\
-        _afx_mark_for_deletion();\
+        afx_mark_for_deletion();\
         asm volatile(\
             "jmp *%0\n\t"\
-            ::"r"(_afx_executor_addr)\
+            ::"r"(afx_executor_addr)\
         );\
     }
 
