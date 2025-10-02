@@ -1,10 +1,18 @@
 #include "afx.h"
+#include <netinet/in.h>
+#include <sys/epoll.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <unistd.h>
 
 static void safe_lock(pthread_mutex_t*);
 static void safe_unlock(pthread_mutex_t*);
 
 static list_node* afx_list_head = NULL;
 static list_node* afx_cur_node = NULL;
+
+static list_node* afx_state_map[10] = {0};
  
 static int num_func = 0;
 static int afx_deletion_mark = 0;
@@ -12,6 +20,7 @@ static int afx_is_running = 0;
  
 static pthread_t* afx_executor_t = NULL;
 static pthread_mutex_t afx_mutex;
+static int afx_epoll_fd = 0;
 
 void* afx_copy_src;
 void* afx_copy_dest;
@@ -36,6 +45,7 @@ static list_node* create_node_safe() {
         goto alloc_error;
     
     new_node->ctx->stack = new_node->ctx->base + STACK_SIZE;
+    new_node->ctx->state = RUNNABLE;
     return new_node;
 
 alloc_error:
@@ -174,6 +184,73 @@ static void afx_restore_context(func_context* fn_ctx, ucontext_t *kernel_ctx){
     (*reg)[REG_EFL] = fn_ctx->cpu.efl;
 }
 
+
+int make_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static int register_epoll(int fd, unsigned int flags){
+    int rc = 0;
+    struct epoll_event ev;
+    ev.events = flags;
+    ev.data.fd = fd;
+    rc = epoll_ctl(afx_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+    if(rc == -1 && errno == EEXIST){
+        rc = epoll_ctl(afx_epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+    }
+    return rc;
+}
+
+static void blocking_call_prologue(int fd, unsigned int flags){
+    block_sigurg();
+    int rc = 0;
+
+    afx_state_map[fd] = afx_cur_node;
+    afx_cur_node->ctx->state = BLOCKED_ON_IO;
+    make_nonblocking(fd);
+    register_epoll(fd, flags);
+    unblock_sigurg();
+}
+
+int afx_accept(int sock, struct sockaddr* addr, socklen_t* sock_len){
+    blocking_call_prologue(sock, EPOLLIN);
+    afx_yield();
+    
+    block_sigurg();
+    int rc = accept(sock, addr, sock_len);
+    unblock_sigurg();
+    return rc;
+}
+
+int afx_connect(int sock, const struct sockaddr *addr, socklen_t addrlen){
+    block_sigurg();
+    make_nonblocking(sock);
+    int rc = connect(sock, addr, addrlen);
+    unblock_sigurg();
+    return rc;
+}
+
+int afx_send(int sock, char* buf, ssize_t size, int flags){
+    blocking_call_prologue(sock, EPOLLOUT | EPOLLONESHOT);
+    afx_yield();
+    
+    block_sigurg();
+    int rc = send(sock, buf, size, flags);
+    unblock_sigurg();
+    return rc;
+}
+
+int afx_recv(int sock, char* buf, ssize_t size, int flags){
+    blocking_call_prologue(sock, EPOLLIN | EPOLLONESHOT);
+    afx_yield();
+    
+    block_sigurg();
+    int rc = recv(sock, buf, size, flags);
+    unblock_sigurg();
+    return rc;
+}
+
 static void afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr){
     if(signum == SIGURG){
         if(afx_deletion_mark == 1){
@@ -187,6 +264,9 @@ static void afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr){
         if(afx_is_running == 1){
             afx_save_context(afx_cur_node->ctx, kernel_ctx);
             afx_cur_node = afx_cur_node->next;
+            if(afx_cur_node->ctx->state == BLOCKED_ON_IO){
+                afx_cur_node = afx_cur_node->next;
+            }
         }
         else{
             afx_cur_node = afx_list_head;
@@ -232,6 +312,20 @@ static void* afx_monitor(void *arg){
     return NULL;
 }
 
+static void* afx_poller(void *arg){
+    int rc = 0;
+    struct epoll_event events[10];
+    afx_epoll_fd = epoll_create1(0);
+    
+    while(1){
+        int n = epoll_wait(afx_epoll_fd, events, 10, -1);
+        for(int i = 0; i < n; i++){
+            afx_state_map[events[i].data.fd]->ctx->state = RUNNABLE;
+        }
+    }
+    return NULL;
+}
+
 void afx_yield(){
     int rc = pthread_kill(*afx_executor_t, SIGURG);
     if(rc != 0){
@@ -243,6 +337,7 @@ void afx_yield(){
 int afx_init(){
     int rc = 0;
     pthread_t monitor_t;
+    pthread_t poller_t;
     afx_executor_t = (pthread_t*) malloc(sizeof(pthread_t));
     
     rc = pthread_create(afx_executor_t, NULL, afx_executor, NULL);
@@ -254,6 +349,12 @@ int afx_init(){
     rc = pthread_create(&monitor_t, NULL, afx_monitor, NULL);
     if(rc != 0){
         printf("Error creating monitor thread\n");
+        return rc;
+    }
+
+    rc = pthread_create(&poller_t, NULL, afx_poller, NULL);
+    if(rc != 0){
+        printf("Error creating poller thread\n");
         return rc;
     }
 

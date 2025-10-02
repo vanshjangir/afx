@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/socket.h>
 #include <ucontext.h>
 
 #ifndef STACK_SIZE
@@ -39,8 +40,14 @@ typedef struct {
     uint64_t efl;
 } cpu_context;
 
+enum func_state {
+    RUNNABLE,
+    BLOCKED_ON_IO
+};
+
 typedef struct {
     cpu_context cpu;
+    enum func_state state;
     void* stack;
     void* base;
 } func_context;
@@ -63,6 +70,10 @@ extern uint64_t afx_rdi, afx_rsi, afx_rdx, afx_rcx, afx_r8, afx_r9;
 
 void afx_yield(void);
 int afx_init();
+int afx_recv(int, char*, ssize_t, int);
+int afx_send(int, char*, ssize_t, int);
+int afx_accept(int, struct sockaddr*, socklen_t*);
+int afx_connect(int, const struct sockaddr*, socklen_t);
 list_node* afx_add_new_node();
 void afx_mark_for_deletion();
 
