@@ -1,18 +1,22 @@
 #include "afx.h"
 #include <netinet/in.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+
+async_dec(void, background_sleeper(void));
 
 static void safe_lock(pthread_mutex_t*);
 static void safe_unlock(pthread_mutex_t*);
 
 static list_node* afx_list_head = NULL;
 static list_node* afx_cur_node = NULL;
+static list_node* afx_background_sleeper = NULL;
 
-static list_node* afx_state_map[10] = {0};
+static list_node* afx_state_map[NUM_FUNC] = {0};
  
 static int num_func = 0;
 static int afx_deletion_mark = 0;
@@ -28,7 +32,6 @@ void* afx_copy_dest;
 uint64_t afx_rbp_caller;
 uint64_t afx_rbp_callee;
 uint64_t afx_copy_size;
-uint64_t afx_executor_addr;
 uint64_t afx_rdi, afx_rsi, afx_rdx, afx_rcx, afx_r8, afx_r9;
 
 static list_node* create_node_safe() {
@@ -67,6 +70,7 @@ list_node* afx_add_new_node(){
     
     if(afx_list_head == NULL){
         afx_list_head = new_node;
+        afx_background_sleeper = new_node;
         afx_list_head->next = afx_list_head;
         afx_list_head->prev = afx_list_head;
     }
@@ -202,11 +206,9 @@ static int register_epoll(int fd, unsigned int flags){
     return rc;
 }
 
-static void blocking_call_prologue(int fd, unsigned int flags){
+static void blocking_socket_prologue(int fd, unsigned int flags){
     block_sigurg();
-    int rc = 0;
-
-    afx_state_map[fd] = afx_cur_node;
+    afx_state_map[fd % NUM_FUNC] = afx_cur_node;
     afx_cur_node->ctx->state = BLOCKED_ON_IO;
     make_nonblocking(fd);
     register_epoll(fd, flags);
@@ -214,7 +216,7 @@ static void blocking_call_prologue(int fd, unsigned int flags){
 }
 
 int afx_accept(int sock, struct sockaddr* addr, socklen_t* sock_len){
-    blocking_call_prologue(sock, EPOLLIN);
+    blocking_socket_prologue(sock, EPOLLIN);
     afx_yield();
     
     block_sigurg();
@@ -232,7 +234,7 @@ int afx_connect(int sock, const struct sockaddr *addr, socklen_t addrlen){
 }
 
 int afx_send(int sock, char* buf, ssize_t size, int flags){
-    blocking_call_prologue(sock, EPOLLOUT | EPOLLONESHOT);
+    blocking_socket_prologue(sock, EPOLLOUT | EPOLLONESHOT);
     afx_yield();
     
     block_sigurg();
@@ -242,7 +244,7 @@ int afx_send(int sock, char* buf, ssize_t size, int flags){
 }
 
 int afx_recv(int sock, char* buf, ssize_t size, int flags){
-    blocking_call_prologue(sock, EPOLLIN | EPOLLONESHOT);
+    blocking_socket_prologue(sock, EPOLLIN | EPOLLONESHOT);
     afx_yield();
     
     block_sigurg();
@@ -251,30 +253,86 @@ int afx_recv(int sock, char* buf, ssize_t size, int flags){
     return rc;
 }
 
-static void afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr){
-    if(signum == SIGURG){
-        if(afx_deletion_mark == 1){
-            afx_cur_node = afx_delete_node(afx_cur_node);
-        }
-        if(num_func == 0){
-            return;
-        }
+void afx_sleep(unsigned int sec){
+    block_sigurg();
+    
+    int tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    struct itimerspec ts = {0};
+    ts.it_value.tv_sec = sec;
+    ts.it_value.tv_nsec = 0;
+    timerfd_settime(tfd, 0, &ts, NULL);
+    
+    afx_state_map[tfd % NUM_FUNC] = afx_cur_node;
+    afx_cur_node->ctx->state = BLOCKED_ON_TIMER;
+    register_epoll(tfd, EPOLLIN | EPOLLONESHOT);
+    unblock_sigurg();
 
-        ucontext_t *kernel_ctx = (ucontext_t*)ctx_ptr;
-        if(afx_is_running == 1){
-            afx_save_context(afx_cur_node->ctx, kernel_ctx);
-            afx_cur_node = afx_cur_node->next;
-            if(afx_cur_node->ctx->state == BLOCKED_ON_IO){
-                afx_cur_node = afx_cur_node->next;
+    afx_yield();
+
+    close(tfd);
+}
+
+void afx_usleep(unsigned int microseconds){
+    block_sigurg();
+    
+    int tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    struct itimerspec ts = {0};
+    ts.it_value.tv_sec = microseconds / 1000000;
+    ts.it_value.tv_nsec = (microseconds % 1000000) * 1000;
+    timerfd_settime(tfd, 0, &ts, NULL);
+    
+    afx_state_map[tfd % NUM_FUNC] = afx_cur_node;
+    afx_cur_node->ctx->state = BLOCKED_ON_TIMER;
+    register_epoll(tfd, EPOLLIN | EPOLLONESHOT);
+    unblock_sigurg();
+
+    afx_yield();
+
+    close(tfd);
+}
+
+static void afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr){
+    if(signum != SIGURG)
+        return;
+
+    if(afx_deletion_mark == 1){
+        afx_cur_node = afx_delete_node(afx_cur_node);
+    }
+    if(num_func == 0){
+        return;
+    }
+
+    ucontext_t *kernel_ctx = (ucontext_t*)ctx_ptr;
+    list_node* to_be_restored = NULL;
+    list_node* iter = NULL;
+    
+    if(afx_is_running == 1){
+        afx_save_context(afx_cur_node->ctx, kernel_ctx);
+        iter = afx_cur_node->next;
+        while(iter->ctx->state != RUNNABLE){
+            iter = iter->next;
+        }
+        to_be_restored = iter;
+
+        if(to_be_restored == afx_background_sleeper){
+            iter = iter->next;
+            while(iter != afx_cur_node){
+                if(iter->ctx->state == RUNNABLE){
+                    to_be_restored = iter;
+                    break;
+                }
+                iter = iter->next;
             }
         }
-        else{
-            afx_cur_node = afx_list_head;
-            afx_is_running = 1;
-        }
-        
-        afx_restore_context(afx_cur_node->ctx, kernel_ctx);
     }
+    else{
+        afx_cur_node = afx_list_head;
+        to_be_restored = afx_cur_node;
+        afx_is_running = 1;
+    }
+    
+    afx_cur_node = to_be_restored;
+    afx_restore_context(afx_cur_node->ctx, kernel_ctx);
 }
 
 static void* afx_executor(void* arg){
@@ -290,13 +348,10 @@ static void* afx_executor(void* arg){
         printf("sigaction error in executor\n");
         exit(EXIT_FAILURE);
     }
+    
+    afx(background_sleeper());
 
     while(1){
-        asm volatile("_afx_executor_loop_start:\n\t");
-        asm volatile(
-            "leaq _afx_executor_loop_start(%%rip), %0"
-            :"=r"(afx_executor_addr)
-        );
         pause();
     }
     return NULL;
@@ -320,7 +375,7 @@ static void* afx_poller(void *arg){
     while(1){
         int n = epoll_wait(afx_epoll_fd, events, 10, -1);
         for(int i = 0; i < n; i++){
-            afx_state_map[events[i].data.fd]->ctx->state = RUNNABLE;
+            afx_state_map[events[i].data.fd % NUM_FUNC]->ctx->state = RUNNABLE;
         }
     }
     return NULL;
@@ -360,3 +415,12 @@ int afx_init(){
 
     return rc;
 }
+
+
+async(
+    void, background_sleeper, (), {
+        while(1){
+            pause();
+        }
+    }
+)

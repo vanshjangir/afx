@@ -17,6 +17,10 @@
 #define STACK_SIZE  (1024*8)
 #endif
 
+#ifndef NUM_FUNC
+#define NUM_FUNC  10007
+#endif
+
 #define PAGE_SIZE   (1024*4)
 
 typedef struct {
@@ -42,7 +46,8 @@ typedef struct {
 
 enum func_state {
     RUNNABLE,
-    BLOCKED_ON_IO
+    BLOCKED_ON_IO,
+    BLOCKED_ON_TIMER
 };
 
 typedef struct {
@@ -65,7 +70,6 @@ extern void* afx_copy_dest;
 extern uint64_t afx_rbp_caller;
 extern uint64_t afx_rbp_callee;
 extern uint64_t afx_copy_size;
-extern uint64_t afx_executor_addr;
 extern uint64_t afx_rdi, afx_rsi, afx_rdx, afx_rcx, afx_r8, afx_r9;
 
 void afx_yield(void);
@@ -74,6 +78,9 @@ int afx_recv(int, char*, ssize_t, int);
 int afx_send(int, char*, ssize_t, int);
 int afx_accept(int, struct sockaddr*, socklen_t*);
 int afx_connect(int, const struct sockaddr*, socklen_t);
+void afx_sleep(unsigned int);
+void afx_usleep(unsigned int);
+
 list_node* afx_add_new_node();
 void afx_mark_for_deletion();
 
@@ -160,10 +167,7 @@ void afx_mark_for_deletion();
             ::"r"(fn)\
         );\
         afx_mark_for_deletion();\
-        asm volatile(\
-            "jmp *%0\n\t"\
-            ::"r"(afx_executor_addr)\
-        );\
+        afx_yield();\
     }
 
 #define async_dec(ret_type, fn)\
