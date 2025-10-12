@@ -22,6 +22,7 @@
 #endif
 
 #define PAGE_SIZE   (1024*4)
+#define MAX_MS_TO_CLEAN   1000
 
 typedef struct {
     uint64_t rdi;
@@ -47,7 +48,8 @@ typedef struct {
 enum func_state {
     RUNNABLE,
     BLOCKED_ON_IO,
-    BLOCKED_ON_TIMER
+    BLOCKED_ON_TIMER,
+    TO_BE_DELETED
 };
 
 typedef struct {

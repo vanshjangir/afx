@@ -37,7 +37,7 @@ int main(){
         printf("Error initializing afx");
         exit(-1);
     }
-    
+
     afx(print1(1));
     afx(print2(1));
     sleep(20);
