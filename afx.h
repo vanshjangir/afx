@@ -83,8 +83,9 @@ int afx_connect(int, const struct sockaddr*, socklen_t);
 void afx_sleep(unsigned int);
 void afx_usleep(unsigned int);
 
-list_node* afx_add_new_node();
+void afx_add_new_node(list_node* node);
 void afx_mark_for_deletion();
+list_node* create_node_safe();
 
 #define save_cpu_context {\
     asm volatile (\
@@ -99,7 +100,7 @@ void afx_mark_for_deletion();
           "=m"(afx_r8), "=m"(afx_r9), "=m"(afx_rbp_callee)\
     );\
     \
-    list_node* node = afx_add_new_node();\
+    list_node* node = create_node_safe();\
     node->ctx->cpu.rdi = afx_rdi;\
     node->ctx->cpu.rsi = afx_rsi;\
     node->ctx->cpu.rdx = afx_rdx;\
@@ -147,6 +148,7 @@ void afx_mark_for_deletion();
         printf("Invalid stack size while copying stack\n");\
         exit(-1);\
     }\
+    afx_add_new_node(node);\
     asm volatile(\
         "leave\n\t"\
         "ret\n\t"\

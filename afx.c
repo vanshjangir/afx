@@ -42,7 +42,7 @@ static long long current_time_ms() {
     return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-static list_node* create_node_safe() {
+list_node* create_node_safe() {
     list_node* new_node = malloc(sizeof(list_node));
     if(!new_node)
         goto alloc_error;
@@ -71,29 +71,26 @@ static void free_node_safe(list_node* node) {
     free(node);
 }
 
-list_node* afx_add_new_node(){
+void afx_add_new_node(list_node* node){
     safe_lock(&afx_mutex);
 
-    list_node* new_node = create_node_safe();
-
     if(afx_list_head == NULL){
-        afx_list_head = new_node;
-        afx_background_sleeper = new_node;
+        afx_list_head = node;
+        afx_background_sleeper = node;
         afx_list_head->next = afx_list_head;
         afx_list_head->prev = afx_list_head;
     }
     else{
         list_node* last = afx_list_head->prev;
-        last->next = new_node;
-        new_node->prev = last;
-        new_node->next = afx_list_head;
-        afx_list_head->prev = new_node;
+        last->next = node;
+        node->prev = last;
+        node->next = afx_list_head;
+        afx_list_head->prev = node;
     }
 
     num_func += 1;
 
     safe_unlock(&afx_mutex);
-    return new_node;
 }
 
 void afx_mark_for_deletion(){
