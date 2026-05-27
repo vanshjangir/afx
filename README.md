@@ -2,11 +2,12 @@
 Simple preemptive scheduler to execute functions asynchronously (for x86_64 linux only). Extremely fragile and entirely useless, obviously not intended to be used anywhere. Works for CPU-bound tasks and some specific non blocking syscalls. Silently breaks if something is blocking the thread. Implementation details are [here](https://vanshjangir.github.io/blog/1_afx.html) and [here](https://vanshjangir.github.io/blog/2_afx_part2.html).
 
 ### Compilation
-* STACK_SIZE is the size of the dedicated stack used by every async function, default size is 8KB. If segfaults or core dumps are occuring for no obvious reasons (the reason is my incompetency), try increasing the STACK_SIZE. Optional to pass, but if passed then make sure that it is a multiple of the page size on your OS, I don't really know the reason for that but it works.
-* NUM_FUNC is the number of maximum async function that can be stored, by default is 10007. Optional to pass.
+* STACK_SIZE is the size of the dedicated stack used by every async function (might be possible to use a different stack size for every async function, but never bothered to implement that), default size is 4KB. If segfaults or core dumps are occuring for no obvious reasons, try increasing the STACK_SIZE. Optional to pass.
+* UNIQUE_FD_STATES is the maximum number of states that can be stored for different file descriptors before it will wrap around and start using the same ones again using a simple division modulo hash. Optional to pass, default is 10007.
+* MAX_MS_TO_CLEAN is the maximum number of milliseconds since the last clean up before a forced cleanup will happen first instead of scheduling the next async function. Optional to pass, default is 1 minute (1000*60 ms).
 * `-fno-omit-frame-pointer` flag needs to be passed, as maintaining frame pointer is essential.
 ```
-gcc -fno-omit-frame-pointer -DSTACK_SIZE=<stack_size> -DNUM_FUNC=<number_of_functions> /path/to/afx.c yourfile.c -o yourfile
+gcc -fno-omit-frame-pointer -DSTACK_SIZE=<stack_size> -DUNIQUE_FD_STATES=<number_of_states> -DMAX_MS_TO_CLEAN=<max_milliseconds_for_cleanup> /path/to/afx.c yourfile.c -o yourfile
 ```
 
 ### Usage (also see examples):

@@ -14,15 +14,18 @@
 #include <ucontext.h>
 
 #ifndef STACK_SIZE
-#define STACK_SIZE  (1024*8)
+#define STACK_SIZE  (1024*4)
 #endif
 
-#ifndef NUM_FUNC
-#define NUM_FUNC  10007
+#ifndef UNIQUE_FD_STATES
+#define UNIQUE_FD_STATES  10007
+#endif
+
+#ifndef MAX_MS_TO_CLEAN
+#define MAX_MS_TO_CLEAN  (1000*60) // 1 minute
 #endif
 
 #define PAGE_SIZE   (1024*4)
-#define MAX_MS_TO_CLEAN   1000
 
 typedef struct {
     uint64_t rdi;

@@ -17,7 +17,7 @@ static list_node* afx_list_head = NULL;
 static list_node* afx_cur_node = NULL;
 static list_node* afx_background_sleeper = NULL;
 
-static list_node* afx_state_map[NUM_FUNC] = {0};
+static list_node* afx_state_map[UNIQUE_FD_STATES] = {0};
 
 static int num_func = 0;
 static int afx_deletion_mark = 0;
@@ -217,7 +217,7 @@ static int register_epoll(int fd, unsigned int flags){
 
 static void blocking_socket_prologue(int fd, unsigned int flags){
     block_sigurg();
-    afx_state_map[fd % NUM_FUNC] = afx_cur_node;
+    afx_state_map[fd % UNIQUE_FD_STATES] = afx_cur_node;
     afx_cur_node->ctx->state = BLOCKED_ON_IO;
     make_nonblocking(fd);
     register_epoll(fd, flags);
@@ -271,7 +271,7 @@ void afx_sleep(unsigned int sec){
     ts.it_value.tv_nsec = 0;
     timerfd_settime(tfd, 0, &ts, NULL);
 
-    afx_state_map[tfd % NUM_FUNC] = afx_cur_node;
+    afx_state_map[tfd % UNIQUE_FD_STATES] = afx_cur_node;
     afx_cur_node->ctx->state = BLOCKED_ON_TIMER;
     register_epoll(tfd, EPOLLIN | EPOLLONESHOT);
     unblock_sigurg();
@@ -290,7 +290,7 @@ void afx_usleep(unsigned int microseconds){
     ts.it_value.tv_nsec = (microseconds % 1000000) * 1000;
     timerfd_settime(tfd, 0, &ts, NULL);
 
-    afx_state_map[tfd % NUM_FUNC] = afx_cur_node;
+    afx_state_map[tfd % UNIQUE_FD_STATES] = afx_cur_node;
     afx_cur_node->ctx->state = BLOCKED_ON_TIMER;
     register_epoll(tfd, EPOLLIN | EPOLLONESHOT);
     unblock_sigurg();
@@ -347,21 +347,20 @@ static void afx_handle_sigurg(int signum, siginfo_t *info, void *ctx_ptr){
 }
 
 static void* afx_executor(void* arg){
-    int rc = 0;
-    struct sigaction sa;
-
-    sa.sa_sigaction = afx_handle_sigurg;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_SIGINFO;
-
-    rc = sigaction(SIGURG, &sa, NULL);
-    if(rc != 0){
-        printf("sigaction error in executor\n");
+    stack_t ss;
+    ss.ss_sp = malloc(SIGSTKSZ);
+    if(!ss.ss_sp){
+        printf("Error allocating signal alt stack\n");
+        exit(EXIT_FAILURE);
+    }
+    ss.ss_size = SIGSTKSZ;
+    ss.ss_flags = 0;
+    if(sigaltstack(&ss, NULL) == -1){
+        printf("sigaltstack error in executor\n");
         exit(EXIT_FAILURE);
     }
 
-    afx_last_clean = current_time_ms();
-    afx(background_sleeper());
+    unblock_sigurg();
 
     while(1){
         pause();
@@ -380,14 +379,12 @@ static void* afx_monitor(void *arg){
 }
 
 static void* afx_poller(void *arg){
-    int rc = 0;
     struct epoll_event events[10];
-    afx_epoll_fd = epoll_create1(0);
 
     while(1){
         int n = epoll_wait(afx_epoll_fd, events, 10, -1);
         for(int i = 0; i < n; i++){
-            afx_state_map[events[i].data.fd % NUM_FUNC]->ctx->state = RUNNABLE;
+            afx_state_map[events[i].data.fd % UNIQUE_FD_STATES]->ctx->state = RUNNABLE;
         }
     }
     return NULL;
@@ -406,6 +403,27 @@ int afx_init(){
     pthread_t monitor_t;
     pthread_t poller_t;
     afx_executor_t = (pthread_t*) malloc(sizeof(pthread_t));
+
+    afx_epoll_fd = epoll_create1(0);
+    if(afx_epoll_fd < 0){
+        printf("Error creating epoll fd\n");
+        return -1;
+    }
+
+    struct sigaction sa;
+    sa.sa_sigaction = afx_handle_sigurg;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    rc = sigaction(SIGURG, &sa, NULL);
+    if(rc != 0){
+        printf("sigaction error\n");
+        return rc;
+    }
+
+    afx_last_clean = current_time_ms();
+    afx(background_sleeper());
+
+    block_sigurg();
 
     rc = pthread_create(afx_executor_t, NULL, afx_executor, NULL);
     if(rc != 0){
