@@ -36,6 +36,8 @@ uint64_t afx_rbp_callee;
 uint64_t afx_copy_size;
 uint64_t afx_rdi, afx_rsi, afx_rdx, afx_rcx, afx_r8, afx_r9;
 
+uint64_t afx_stack_size = STACK_SIZE;
+
 static long long current_time_ms() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -51,11 +53,11 @@ list_node* create_node_safe() {
     if(!new_node->ctx)
         goto alloc_error;
 
-    new_node->ctx->base = aligned_alloc(PAGE_SIZE, STACK_SIZE);
+    new_node->ctx->base = aligned_alloc(PAGE_SIZE, afx_stack_size);
     if(!new_node->ctx->base)
         goto alloc_error;
 
-    new_node->ctx->stack = new_node->ctx->base + STACK_SIZE;
+    new_node->ctx->stack = new_node->ctx->base + afx_stack_size;
     new_node->ctx->state = RUNNABLE;
     return new_node;
 
@@ -421,7 +423,7 @@ int afx_init(){
     }
 
     afx_last_clean = current_time_ms();
-    afx(background_sleeper());
+    afx(background_sleeper(), 1024);
 
     block_sigurg();
 

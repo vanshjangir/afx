@@ -77,6 +77,8 @@ extern uint64_t afx_rbp_callee;
 extern uint64_t afx_copy_size;
 extern uint64_t afx_rdi, afx_rsi, afx_rdx, afx_rcx, afx_r8, afx_r9;
 
+extern uint64_t afx_stack_size;
+
 void afx_yield(void);
 int afx_init();
 int afx_recv(int, char*, ssize_t, int);
@@ -133,7 +135,7 @@ list_node* create_node_safe();
     );\
     \
     if(afx_rbp_caller > afx_rbp_callee &&\
-        afx_rbp_caller - afx_rbp_callee < STACK_SIZE){\
+        afx_rbp_caller - afx_rbp_callee < afx_stack_size){\
         \
         afx_copy_size = afx_rbp_caller - afx_rbp_callee - 16;\
         node->ctx->stack = (char*)node->ctx->stack - afx_copy_size;\
@@ -159,9 +161,19 @@ list_node* create_node_safe();
     );\
 }
 
-#define afx(fn)\
+#define afx_dynamic(fn, size)\
+    afx_stack_size = (size);\
+    asm ("movq %%rbp, %0\n\t": "=r"(afx_rbp_caller));\
+    __AFX_PREFIX_##fn;\
+    afx_stack_size = (STACK_SIZE);\
+
+#define afx_static(fn)\
     asm ("movq %%rbp, %0\n\t": "=r"(afx_rbp_caller));\
     __AFX_PREFIX_##fn;
+
+#define get_3rd_arg(_1, _2, target, ...) target
+
+#define afx(...) get_3rd_arg(__VA_ARGS__, afx_dynamic, afx_static)(__VA_ARGS__)
 
 #define async(ret_type, fn, args, body)\
     ret_type fn args{\

@@ -7,7 +7,7 @@ async(
     void, one_second, (unsigned int s), {
         while(1){
             afx_sleep(s);
-            printf("after one second\n");
+            printf("after %d second\n", s);
         }
     }
 )
@@ -21,6 +21,9 @@ int main(){
 
     afx(one_second(1));
 
+    // passing stack_size to override the default value
+    afx(one_second(2), 512);
+    
     sleep(10);
     return 0;
 }
